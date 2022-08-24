@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         HyReadV2
 // @namespace    https://qinlili.bid
-// @version      0.1
+// @version      0.2
 // @description  适配新版
 // @author       琴梨梨
 // @match        https://service.ebook.hyread.com.tw/ebookservice/epubreader/hyread/v3/openbook2.jsp?*
@@ -237,17 +237,180 @@
             };
             console.log(fileList);
             SakiProgress.setPercent(80);
-            SakiProgress.setText("正在解密数据...");
-            await sleep(100);
+            SakiProgress.setText("正在解密文本流...");
+            await sleep(50);
+            let advancedDecrypt="0";
+            let removeList=[]
+            window.addEventListener("message",e=>{
+                if(e.data.action=="remove"){
+                    removeList.push(e.data.filename);
+                };
+            })
             for (const file of fileList) {
                 if(file.path.endsWith(".xhtml")){
                     let fileBuffer=forge.util.createBuffer((await file.file.arrayBuffer()));
                     let decryptor=forge.cipher.createDecipher("AES-ECB", key);
                     if (decryptor.start(), decryptor.update(fileBuffer), !decryptor.finish()) throw new Error("Decryption error");
                     let output=decryptor.output.toString();
+                    if(output.indexOf("//<![CDATA[")>0){
+                        //触发进阶解密:CANVAS解密模式
+                        if(advancedDecrypt==="0"){
+                            advancedDecrypt=confirm("检测到EPUB自身已被混淆或加密，是否启用进阶解密？\n该功能不稳定，可能无法正常工作\n启用该功能可以让生成的EPUB文件被更多软件支持\n但会延长十倍甚至九倍解密时间\n若解密过程失去响应，请打开F12提交日志反馈")
+                        }
+                        if(advancedDecrypt){
+                            SakiProgress.setText("初始化进阶解密组件...");
+                            let urlList=[];
+                            fileList.forEach(file=>{
+                                urlList.push({
+                                    filename:file.path.substr(file.path.lastIndexOf("/")+1),
+                                    url:URL.createObjectURL(file.file)
+                                })
+                            });
+                            console.log(urlList);
+                            let decryptFrame=document.createElement("iframe");
+                            decryptFrame.frameBorder = 0;
+                            decryptFrame.style = "padding:100%;z-index:9999;position:fixed;width:100%;margin-top:0px;height:100%;left:0px;right:0px;top:0px;";
+                            document.body.appendChild(decryptFrame);
+                            SakiProgress.setText("加载文档数据...");
+                            let xhtmlParsed = new DOMParser().parseFromString(output, "text/html");
+                            console.log(xhtmlParsed);
+                            let scriptsBackup=[];
+                            for(;xhtmlParsed.getElementsByTagName("script")[0];){
+                                scriptsBackup.push(xhtmlParsed.getElementsByTagName("script")[0].outerHTML);
+                                xhtmlParsed.getElementsByTagName("script")[0].remove();
+                            };
+                            let origincss="";
+                            [].forEach.call(xhtmlParsed.head.children,node=>{
+                                if(node.rel=="stylesheet"){
+                                    console.log(node);
+                                    origincss=node.getAttribute("href");
+                                    let cssname=node.href;
+                                    cssname=cssname.substr(cssname.lastIndexOf("/")+1);
+                                    urlList.forEach(file=>{
+                                        if(file.filename==cssname){
+                                            node.href=file.url;
+                                        }
+                                    })
+                                }
+                            });
+                            let hookScript=document.createElement("script");
+                            hookScript.innerHTML=`
+			console.log("Salmon Advanced Decrypt Mode:0x1");
+			window.addEventListener("message", e => {
+				console.log(e);
+				switch (e.data.method) {
+					case "file": {
+                        console.log("Filelist Loaded.");
+						window.list = e.data.list;
+						break;
+					};
+                    case "restore":{
+                        //还原css
+                        [].forEach.call(document.head.children,node=>{
+                                if(node.rel=="stylesheet"){
+                                    console.log(node);
+                                    node.href=e.data.css;
+                                }
+                            });
+                        break;
+                    }
+					case "convert": {
+						//用图片取代canvas
+						[].forEach.call(document.getElementsByTagName("canvas"), obj => {
+							let img = document.createElement("img");
+							document.body.appendChild(img);
+							img.src = obj.toDataURL("image/webp", 1.0);
+							img.width = obj.width;
+							img.height = obj.height;
+							obj.remove()
+						});
+						//清理所有不该出现在EPUB里的元素
+						for(;document.getElementsByTagName("script")[0];){
+							document.getElementsByTagName("script")[0].remove();
+						};
+                        break;
+					};
+				}
+			}, false);
+			var valueProp = Object.getOwnPropertyDescriptor(Image.prototype, 'src');
+			Object.defineProperty(Image.prototype, 'src', {
+				set: function (image) {
+					console.log("Hook Image Loader...");
+					let filename = image.substr(image.lastIndexOf("/")+1);
+					window.list.forEach(file => {
+						if (file.filename == filename) {
+							image = file.url;
+					        console.log("Hook Image Success!");
+                            window.parent.postMessage({action:"remove",filename:filename}, "*");
+				     	}
+					})
+					valueProp.set.call(this, image);
+				}
+			});
+			(draw => {
+				CanvasRenderingContext2D.prototype.drawImage = function (image, sx, sy, sWidth, sHeight, dx, dy, dWidth, dHeight) {
+					console.log(image);
+					console.log(sx);
+					console.log(sy);
+					console.log(sWidth);
+					console.log(sHeight);
+					console.log(dx);
+					console.log(dy);
+					console.log(dWidth);
+					console.log(dHeight);
+					draw.call(this, image, sx, sy, sWidth, sHeight, dx, dy, dWidth, dHeight);
+				};
+			})(CanvasRenderingContext2D.prototype.drawImage);
+                            `
+                            xhtmlParsed.head.appendChild(hookScript);
+                            let docFrame=xhtmlParsed.documentElement.outerHTML;
+                            let decryptDoc=decryptFrame.contentDocument;
+                            //debugger
+                            decryptDoc.open();
+                            decryptDoc.write(docFrame);
+                            await sleep(10);
+                            decryptFrame.contentWindow.postMessage({
+                                method:"file",
+                                list:urlList
+                            },"*");
+                            SakiProgress.setText("加载全文数据...");
+                            await sleep(10);
+                            scriptsBackup.forEach(script=>{
+                                decryptDoc.write(script);
+                            });
+                            SakiProgress.setText("渲染页面...");
+                            await sleep(10);
+                            //debugger
+                            decryptFrame.contentWindow.postMessage({
+                                method:"convert"
+                            },"*");
+                            decryptDoc.close();
+                            SakiProgress.setText("解密页面...");
+                            await sleep(10);
+                            decryptFrame.contentWindow.postMessage({
+                                method:"restore",
+                                css:origincss
+                            },"*");
+                            output=decryptFrame.contentDocument.documentElement.outerHTML;
+                            SakiProgress.setText("保存页面...");
+                            await sleep(10);
+                            document.body.removeChild(decryptFrame);
+                        }
+                    }
                     file.file=new Blob([output]);
                 }
             };
+            SakiProgress.setPercent(84);
+            SakiProgress.setText("正在清理...");
+            await sleep(100);
+            let emptyfile=await (await fetch("data:image/jpeg,1")).blob();
+            removeList.forEach(remove=>{
+                fileList.forEach(file=>{
+                    if(file.path.substr(file.path.lastIndexOf("/")+1)==remove){
+                        file.file=emptyfile;
+                    }
+                });
+            });
             SakiProgress.setPercent(85);
             SakiProgress.setText("正在生成文件结构...");
             await sleep(100);
