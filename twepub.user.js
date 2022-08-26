@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         HyReadEPUBV2
 // @namespace    https://qinlili.bid
-// @version      0.2.1
+// @version      0.2.2
 // @description  适配新版
 // @author       琴梨梨
 // @match        https://service.ebook.hyread.com.tw/ebookservice/epubreader/hyread/v3/openbook2.jsp?*
@@ -252,8 +252,13 @@
                 if (file.path.endsWith(".xhtml")) {
                     let fileBuffer = forge.util.createBuffer((await file.file.arrayBuffer()));
                     let decryptor = forge.cipher.createDecipher("AES-ECB", key);
-                    if (decryptor.start(), decryptor.update(fileBuffer), !decryptor.finish()) throw new Error("Decryption error");
-                    let output = decryptor.output.toString();
+                    let output
+                    if (decryptor.start(), decryptor.update(fileBuffer), !decryptor.finish()){
+                        //解密失败，推测为未加密文件
+                        output=await file.file.text();
+                    }else{
+                        output = decryptor.output.toString();
+                    };
                     if (output.indexOf("//<![CDATA[") > 0) {
                         //触发进阶解密:CANVAS解密模式
                         if (advancedDecrypt === "0") {
